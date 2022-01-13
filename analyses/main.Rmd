@@ -1,5 +1,5 @@
 ---
-title: "01_IPDfromKM"
+title: "Bayesian reanalysis of the TOMAHAWK trial"
 author: "Arthur M. Albuquerque"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output: 
@@ -131,7 +131,7 @@ The mean hazard ratio of the extracted 30-day mortality COACT data was
 `r tidy_cox$conf.low |> exp() |> round(2)`,
 `r tidy_cox$conf.high |> exp() |> round(2)`).
 
-Now, we will these results to construct a normally prior distribution on the log
+Now, we will these results to construct a normal prior distribution on the log
 scale. This distributions yields 17.5% of the probability density below HR < 1.
 
 ```{r}
