@@ -1,0 +1,322 @@
+---
+title: "01_IPDfromKM"
+author: "Arthur M. Albuquerque"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+          code_folding: hide
+          toc: yes
+          toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Ensures the package "pacman" is installed
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(here,
+               IPDfromKM,
+               dplyr,
+               broom,
+               ggplot2,
+               ggdist,
+               gt)
+```
+
+# Extract 30-day all-cause mortality IPD from the COACT RCT KM curve
+
+Process data coordinates + Reconstruct IPD
+
+```{r preprocessing}
+delayed = read.csv(here::here("data/delayed.csv"),
+                    header= TRUE)
+immediate = read.csv(here::here("data/immediate.csv"),
+                 header= TRUE)
+
+# looking at 8 years
+
+risk_delayed = c(265, 191, 183) # number at risk for delayed
+
+risk_immediate = c(273, 183, 178) # number at risk for immediate
+
+t_risk = c(0, 15, 30) # X axis tick labels
+
+pre_delayed <- IPDfromKM::preprocess(dat=delayed,
+                                     trisk=t_risk,
+                                     nrisk=risk_delayed,
+                                     maxy=100)
+
+pre_immediate <- IPDfromKM::preprocess(dat=immediate,
+                                  trisk=t_risk,
+                                  nrisk=risk_immediate,
+                                  maxy=100)
+
+ipd_delayed <- IPDfromKM::getIPD(prep=pre_delayed,
+                                 armID=0, # treat = 0
+                                 tot.events=NULL)
+
+ipd_immediate <- IPDfromKM::getIPD(prep=pre_immediate,
+                              armID=1, # treat = 1
+                              tot.events=NULL)
+```
+
+Accuracy assessment
+
+```{r accuracy}
+summary(ipd_delayed)
+plot(ipd_delayed)
+
+summary(ipd_immediate)
+plot(ipd_immediate)
+```
+
+Secondary analysis
+
+```{r secondary}
+report <- IPDfromKM::survreport(ipd1=ipd_delayed$IPD,
+                                ipd2=ipd_immediate$IPD,
+                                arms=2,
+                                interval=5, 
+                                s=c(0.50,0.75,0.95))
+
+```
+
+Generate unique data frame with both IPD data
+
+```{r}
+both_ipd = dplyr::bind_rows(ipd_immediate$IPD, ipd_delayed$IPD) %>% 
+  dplyr::mutate(treat = dplyr::case_when(
+    treat == 0 ~ "Delayed",
+    treat == 1 ~ "Immediate"),
+    treat = as.factor(treat))
+
+# save(both_ipd,
+#      file = here::here("output/data/both_ipd.RData"))
+```
+
+
+# Bayesian analysis
+
+## Prior
+
+Fit frequentist Cox model
+
+```{r frequentist cox}
+# Fit Cox
+cox = survival::coxph(survival::Surv(time, status) ~ 1 + treat,
+                       data = both_ipd)
+
+tidy_cox =
+  broom::tidy(cox, conf.int = T) %>% 
+  select(-1) %>% 
+  round(2)
+
+prior_mean = tidy_cox$estimate
+prior_SE = tidy_cox$std.error
+
+```
+
+The mean hazard ratio of the extracted 30-day mortality COAT data was
+`r prior_mean |> exp() |> round(2)`.
+
+Now, we will use this value as the mean of our normally distributed prior.
+Because there are few data, and one cannot rule out eventual benefit of the 
+immediated intervetion (HR < 1), we will use apply a prior with a weak strength.
+
+As suggested by [Zampieri et al. 2021](https://www.atsjournals.org/doi/10.1164/rccm.202006-2381CP),
+we will "consider a normal prior centered at the log of the expected HR for the
+intervention with the variance set to allow at least 0.30 probability
+of Pr(HR < 1)".
+
+Here is the aforementioned prior distribution:
+
+```{r}
+# Assuming a mean = log(1.15), what is the SD that yields a distribution with
+# 0.3 probability density below log(1)?
+# prior_SE = (tidy_cox$estimate - log(1))/qnorm(1-0.3)
+
+
+# Function
+
+plot_fun = function(mean_beta,
+                    sd_beta,
+                    multiplier,
+                    color){
+
+prob = 
+  if(multiplier == -1){
+    100*round(pnorm(0, mean = mean_beta, sd = sd_beta), 3)}
+else {
+  100 - 100*round(pnorm(0, mean = mean_beta, sd = sd_beta), 3)
+}
+
+ggplot(data = data.frame(x = c(-2, 2)), aes(x)) + #Empty plot
+  
+  # Area
+  geom_area(stat = "function", fun = dnorm,
+            args = list(mean = mean_beta, sd = sd_beta),
+            fill = color, xlim = c(4*multiplier, 0),
+            alpha=0.9) +
+  # Curve
+  stat_function(fun = dnorm, n = 1000,
+              args = list(mean = mean_beta, sd = sd_beta),
+              linetype=1, size = 1.2) +
+  # Text
+  annotate("text", x = 0.5*multiplier, y = 0.5, label = paste0(prob, "%"),
+           colour = "black",  size = 7, fontface = "bold") +
+  
+  # Dashed line
+  geom_vline(xintercept = 0, linetype = 2) +
+  
+  scale_y_continuous(breaks = seq(0, 5, 1),
+                     limits = c(0, 5),
+                     expand = c(0, 0)) + # remove gap between X and Y axis
+  scale_x_continuous(breaks = log(seq(0.5, 2, 0.25)),
+                     labels = seq(0.5, 2., 0.25),
+                     expand = c(0, 0)) +
+  coord_cartesian(x = log(c(0.4, 2.8)),
+                  y = c(0, 5)) +
+  labs(x = NULL,
+       y = "Density\n") +
+  theme_classic() +
+  theme(
+    plot.margin = margin(20,20,20,20),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.position = 'right',
+    legend.text = element_text(size=12),
+    legend.title = element_text(size=14),
+    legend.key= element_blank(),
+    panel.background = element_blank()
+    )
+}
+
+plot_fun(
+  prior_mean, # mean
+  prior_SE,  # sd
+  -1, # color side
+  "khaki" # color
+  ) 
+```
+
+## Likelihood 
+
+We will update the prior above with the TOMAHAWK data. 
+
+```{r}
+# TOMAHAWK's primary outcome (death from any cause at 30 days)
+
+# Transform it to the log scale and calculate the standard error (SE)
+# https://training.cochrane.org/handbook/current/chapter-06#section-6-3-2
+
+UCL = 1.63
+LCL = 1.00
+
+TOMAHAWK_SE = (log(UCL) - log(LCL))/3.92
+TOMAHAWK_mean = log(1.28)
+```
+
+## Posterior
+
+We will apply a Bayesian normal conjugate analysis to generate the posterior
+distribution
+
+```{r}
+# Spiegelhalter DJ, Abrams KR, Myles JP. Bayesian Approaches to Clinical Trials
+# and Health Care Evaluation. Wiley; 2004.
+
+post.normal.mean <- function(prior.mean, prior.var, data.mean, data.var)
+{
+  post.mean.numerator = prior.mean/prior.var + data.mean/data.var
+  post.mean.denominator = 1/prior.var + 1/data.var
+  post.mean =  post.mean.numerator/post.mean.denominator
+  post.var = (1/(1/prior.var + 1/data.var))
+  draws = data.frame(draws = rnorm(n = 10e4,
+                                   mean = post.mean,
+                                   sd = sqrt(post.var)))
+  return(draws)
+}
+
+set.seed(123)
+
+posterior = post.normal.mean(prior.mean = prior_mean,
+                             prior.var = prior_SE^2,
+                             data.mean = TOMAHAWK_mean,
+                             data.var = TOMAHAWK_SE^2)
+```
+
+Let's plot it:
+
+```{r}
+posterior |> 
+  ggplot(aes(x = draws,
+             fill_ramp = stat(x > log(1)))
+         ) +
+  # Posterior
+  ggdist::stat_halfeye(fill = "firebrick", # distribution fill
+                       # very important so all distributions are comparable
+                       normalize = "none", 
+                       .width = 0.95, # 95% CrI
+                       point_interval = ggdist::median_hdi # median
+                       ) +
+  # To fill posterior distribution OR > 1 as gray
+  ggdist::scale_fill_ramp_discrete(from = "gray85", range = c(0,1)) +
+  
+  # Prior 
+  stat_function(fun = dnorm,
+                args = c(mean = prior_mean,
+                         sd = prior_SE),
+                alpha = 0.8, color = "gray50", linetype = 2, size = 0.8) + 
+  
+  # Likelihood 
+  stat_function(fun = dnorm,
+                args = c(mean = TOMAHAWK_mean,
+                         sd = TOMAHAWK_SE),
+                alpha = 0.8, linetype = 2, size = 0.8) + 
+    
+  #geom_vline(xintercept = log(1), linetype = 2) +
+  scale_y_continuous(limits = c(0, 4),
+                     breaks = seq(0, 4, 2),
+                     expand = c(0, 0.3)) +
+  scale_x_continuous(breaks = log(seq(0.6, 1.8, 0.2)),
+                     limits = log(c(0.55, 1.85)),
+                     labels = seq(0.6, 1.8, 0.2)) +
+  labs(x = "Hazard Ratio (log scale)",
+       y = "Density") +
+  ggdist::theme_ggdist() +
+  theme(legend.position = 'none',
+        plot.title = element_text(hjust = 0.5), # centralize title
+        plot.margin = margin(20, 20, 20, 20))
+```
+
+```{r}
+posterior |> 
+  ggdist::median_hdi(exp(draws)) |> 
+  dplyr::mutate(across(1:3, ~round(.,2))) |> 
+  dplyr::summarise(Median = `exp(draws)`,
+                   "95% CrI" = stringr::str_c(.lower, ", ", .upper)) |> 
+  gt::gt()
+```
+
+
+```{r}
+posterior |> 
+  dplyr::summarise("Pr(HR < 1.0)" = mean(draws < log(1)),
+                   "Pr(HR > 1.0)" = mean(draws > log(1)),
+                   "Pr(HR > 1.2)" = mean(draws > log(1.2)),
+                   "Pr(ROPE)" = mean(draws < log(1.2) & draws > log(1/1.2))) |> 
+  dplyr::mutate(dplyr::across(1:4, ~100*round(., 2))) |> 
+  gt::gt()|> 
+  gt::tab_spanner(label = "Posterior Probability, %",
+                  columns = 1:4)
+  
+```
+
+
+
+
