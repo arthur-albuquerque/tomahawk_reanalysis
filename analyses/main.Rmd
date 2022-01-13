@@ -10,7 +10,10 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.align = 'center',
+                      message=FALSE,
+                      warning=FALSE)
 ```
 
 ```{r}
@@ -26,7 +29,11 @@ pacman::p_load(here,
                gt)
 ```
 
-# Extract 30-day all-cause mortality IPD from the COACT RCT KM curve
+We will first extract 30-day all-cause mortality IPD from the
+[COACT RCT](https://www.nejm.org/doi/full/10.1056/NEJMoa1816897) Kaplan-Meier
+curve using the [IPDfromKM package](https://doi.org/10.1186/s12874-021-01308-8).
+
+# Data extraction
 
 Process data coordinates + Reconstruct IPD
 
@@ -119,25 +126,15 @@ prior_SE = tidy_cox$std.error
 
 ```
 
-The mean hazard ratio of the extracted 30-day mortality COAT data was
-`r prior_mean |> exp() |> round(2)`.
+The mean hazard ratio of the extracted 30-day mortality COACT data was
+`r prior_mean |> exp() |> round(2)` (95% CI:
+`r tidy_cox$conf.low |> exp() |> round(2)`,
+`r tidy_cox$conf.high |> exp() |> round(2)`).
 
-Now, we will use this value as the mean of our normally distributed prior.
-Because there are few data, and one cannot rule out eventual benefit of the 
-immediated intervetion (HR < 1), we will use apply a prior with a weak strength.
-
-As suggested by [Zampieri et al. 2021](https://www.atsjournals.org/doi/10.1164/rccm.202006-2381CP),
-we will "consider a normal prior centered at the log of the expected HR for the
-intervention with the variance set to allow at least 0.30 probability
-of Pr(HR < 1)".
-
-Here is the aforementioned prior distribution:
+Now, we will these results to construct a normally prior distribution on the log
+scale. This distributions yields 17.5% of the probability density below HR < 1.
 
 ```{r}
-# Assuming a mean = log(1.15), what is the SD that yields a distribution with
-# 0.3 probability density below log(1)?
-# prior_SE = (tidy_cox$estimate - log(1))/qnorm(1-0.3)
-
 
 # Function
 
@@ -179,7 +176,7 @@ ggplot(data = data.frame(x = c(-2, 2)), aes(x)) + #Empty plot
                      expand = c(0, 0)) +
   coord_cartesian(x = log(c(0.4, 2.8)),
                   y = c(0, 5)) +
-  labs(x = NULL,
+  labs(x = "Hazard Ratio (log scale)",
        y = "Density\n") +
   theme_classic() +
   theme(
@@ -252,7 +249,7 @@ posterior = post.normal.mean(prior.mean = prior_mean,
 
 Let's plot it:
 
-```{r}
+```{r fig.cap="Prior, Likelihood, and Posterior distributions. Color filled curve represents the posterior distribution. Color filled area depicts the posterior probability of immediate angiography harm (area under the curve > 1.0). Interval bars depict the posterior median and 95% highest density intervals. Dashed black curve represents the likelihood (TOMAHAWK). Dashed gray curve represents the prior (COACT)."}
 posterior |> 
   ggplot(aes(x = draws,
              fill_ramp = stat(x > log(1)))
@@ -294,27 +291,28 @@ posterior |>
         plot.margin = margin(20, 20, 20, 20))
 ```
 
+Here is a summary of the posterior results:
+
 ```{r}
-posterior |> 
+hdi = 
+  posterior |> 
   ggdist::median_hdi(exp(draws)) |> 
   dplyr::mutate(across(1:3, ~round(.,2))) |> 
-  dplyr::summarise(Median = `exp(draws)`,
-                   "95% CrI" = stringr::str_c(.lower, ", ", .upper)) |> 
-  gt::gt()
-```
+  dplyr::summarise("HR (95% CrI)" = stringr::str_c(`exp(draws)`,
+                                           " (", .lower, ", ", .upper,
+                                           ")"))
 
-
-```{r}
+hdi |> 
+  bind_cols( 
 posterior |> 
   dplyr::summarise("Pr(HR < 1.0)" = mean(draws < log(1)),
                    "Pr(HR > 1.0)" = mean(draws > log(1)),
-                   "Pr(HR > 1.2)" = mean(draws > log(1.2)),
-                   "Pr(ROPE)" = mean(draws < log(1.2) & draws > log(1/1.2))) |> 
-  dplyr::mutate(dplyr::across(1:4, ~100*round(., 2))) |> 
+                   "Pr(HR > 1.2)" = mean(draws > log(1.2))) |> 
+  dplyr::mutate(dplyr::across(1:3, ~100*round(., 2)))
+) |> 
   gt::gt()|> 
   gt::tab_spanner(label = "Posterior Probability, %",
-                  columns = 1:4)
-  
+                  columns = 2:4)
 ```
 
 
